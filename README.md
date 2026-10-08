@@ -85,11 +85,12 @@ The software was developed on the following dependencies. Ubuntu 20.04 and ROS N
 
 ## Installation
 
-SLICT uses UFOMap for global map management. It also supports epicyclic lidar (Livox). Thus, three packages need to be included in the catkin workspace:
+SLICT uses UFOMap for global map management. Livox converter nodes are optional in this branch and are disabled by default, so a normal build only needs SLICT and UFOMap in the catkin workspace:
 
 1. [SLICT](https://github.com/brytsknguyen/slict)
 2. [UFOMap (devel_surfel)](https://github.com/brytsknguyen/ufomap/tree/devel_surfel)
-3. To compile the package for use with livox lidars (avia, mid-70, mid 360), you need to install [Livox ROS driver (forked)](https://github.com/brytsknguyen/livox_ros_driver) and [Livox ROS driver2 (forked)](https://github.com/brytsknguyen/livox_ros_driver2) (you need to install [LIVOX-SDK](https://github.com/Livox-SDK/Livox-SDK) and [LIVOX-SDK2](https://github.com/Livox-SDK/Livox-SDK2))
+
+To compile the optional converter nodes for Livox lidars (Avia, Mid-70, or Mid-360), install the forked [Livox ROS driver](https://github.com/brytsknguyen/livox_ros_driver), [Livox ROS driver2](https://github.com/brytsknguyen/livox_ros_driver2), their SDKs, and configure with `-DSLICT_BUILD_LIVOX_CONVERTERS=ON`.
 
 Please install all dependencies first. Afterwards, create a ros workspace, clone the packages to the workspace, and build by `catkin build` or `catkin_make`, for e.g.:
 
@@ -97,9 +98,7 @@ Please install all dependencies first. Afterwards, create a ros workspace, clone
 mkdir -p slict_ws/src
 cd slict_ws/src
 git clone https://github.com/brytsknguyen/slict
-git clone https://github.com/brytsknguyen/ufomap && cd ufomap && git checkout devel_surfel && cd ..
-git clone https://github.com/brytsknguyen/livox_ros_driver
-git clone https://github.com/brytsknguyen/livox_ros_driver2
+git clone https://github.com/brytsknguyen/ufomap && cd ufomap && git checkout 1acb0e6a2ba8748dba44229e5541eea199e10b32 && cd ..
 cd .. && catkin build
 ```
 The launch files for NTU VIRAL, Newer College, MCD VIRAL, and FusionPortable are provided under `launch`

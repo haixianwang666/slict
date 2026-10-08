@@ -22,20 +22,23 @@ topic 不会被订阅。
 ## 环境与编译
 
 上游 SLICT2 `noetic` 版本要求 Ubuntu 20.04、ROS Noetic、Ceres 2.1、Sophus 和
-`devel_surfel` 分支 UFOMap。上游 CMake 还会编译 Livox 转换节点，因此即使本赛题
-运行时不使用 Livox，也需按上游 README 安装其 fork 驱动。
+ROS 1 版本的 `devel_surfel` UFOMap。该分支最新提交已经迁移到 ROS 2，因此必须固定到
+下面给出的最后一个 ROS 1/catkin 提交。比赛构建默认关闭 Livox 转换节点，不需要安装
+Livox SDK、`livox_ros_driver` 或 `livox_ros_driver2`。
 
 ```bash
 mkdir -p ~/slict_ws/src
 cd ~/slict_ws/src
 git clone -b devel_surfel https://github.com/brytsknguyen/ufomap.git
-git clone https://github.com/brytsknguyen/livox_ros_driver.git
-git clone https://github.com/brytsknguyen/livox_ros_driver2.git
+git -C ufomap checkout 1acb0e6a2ba8748dba44229e5541eea199e10b32
 ln -s /absolute/path/to/slict2-challenge-2026 slict
 cd ~/slict_ws
 catkin build slict
 source devel/setup.bash
 ```
+
+若确实需要编译上游 Livox 转换节点，请安装两个 Livox 驱动，并给 catkin 传入
+`-DSLICT_BUILD_LIVOX_CONVERTERS=ON`；比赛运行不需要开启此选项。
 
 ## 运行两个场景
 

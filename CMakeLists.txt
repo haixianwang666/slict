@@ -7,8 +7,12 @@ set(CMAKE_BUILD_TYPE "Release")
 set(CMAKE_CXX_FLAGS "-std=c++17 -Wfatal-errors")
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -Wall -g")
 
+## Livox converter nodes are unrelated to the Airy challenge pipeline. Keep
+## them optional so the core estimator can be built without either Livox SDK.
+option(SLICT_BUILD_LIVOX_CONVERTERS "Build Livox-to-Ouster converter nodes" OFF)
+
 ## Find catkin macros and libraries native to ubuntu
-find_package(catkin REQUIRED COMPONENTS
+set(SLICT_CATKIN_COMPONENTS
   dynamic_reconfigure
   tf
   tf_conversions
@@ -26,9 +30,16 @@ find_package(catkin REQUIRED COMPONENTS
   image_transport
   ufomap_msgs
   ufomap_ros
-  livox_ros_driver
-  livox_ros_driver2
 )
+
+if(SLICT_BUILD_LIVOX_CONVERTERS)
+  list(APPEND SLICT_CATKIN_COMPONENTS
+    livox_ros_driver
+    livox_ros_driver2
+  )
+endif()
+
+find_package(catkin REQUIRED COMPONENTS ${SLICT_CATKIN_COMPONENTS})
 
 ## Find 3rd-party packages and libraries
 find_package(ufomap REQUIRED)
@@ -145,16 +156,18 @@ add_executable(${PROJECT_NAME}_OusterToVelodyne src/lidar_converters/OusterToVel
 add_dependencies(${PROJECT_NAME}_OusterToVelodyne ${catkin_EXPORTED_TARGETS} ${PROJECT_NAME}_generate_messages_cpp)
 target_compile_options(${PROJECT_NAME}_OusterToVelodyne PRIVATE ${OpenMP_CXX_FLAGS})
 target_link_libraries(${PROJECT_NAME}_OusterToVelodyne ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${CERES_LIBRARIES} ${OpenCV_LIBRARIES} ${OpenMP_CXX_FLAGS} UFO::Map Sophus::Sophus)
-# Livox avia, mid-70
-add_executable(${PROJECT_NAME}_livox_to_ouster src/lidar_converters/LivoxToOuster.cpp)
-add_dependencies(${PROJECT_NAME}_livox_to_ouster ${catkin_EXPORTED_TARGETS} ${PROJECT_NAME}_generate_messages_cpp)
-target_compile_options(${PROJECT_NAME}_livox_to_ouster PRIVATE ${OpenMP_CXX_FLAGS})
-target_link_libraries(${PROJECT_NAME}_livox_to_ouster ${catkin_LIBRARIES} ${CERES_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBRARIES} ${OpenMP_CXX_FLAGS} UFO::Map Sophus::Sophus)
-# Livox mid-360
-add_executable(${PROJECT_NAME}_livox2_to_ouster src/lidar_converters/Livox2ToOuster.cpp)
-add_dependencies(${PROJECT_NAME}_livox2_to_ouster ${catkin_EXPORTED_TARGETS} ${PROJECT_NAME}_generate_messages_cpp)
-target_compile_options(${PROJECT_NAME}_livox2_to_ouster PRIVATE ${OpenMP_CXX_FLAGS})
-target_link_libraries(${PROJECT_NAME}_livox2_to_ouster ${catkin_LIBRARIES} ${CERES_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBRARIES} ${OpenMP_CXX_FLAGS} UFO::Map Sophus::Sophus)
+if(SLICT_BUILD_LIVOX_CONVERTERS)
+  # Livox avia, mid-70
+  add_executable(${PROJECT_NAME}_livox_to_ouster src/lidar_converters/LivoxToOuster.cpp)
+  add_dependencies(${PROJECT_NAME}_livox_to_ouster ${catkin_EXPORTED_TARGETS} ${PROJECT_NAME}_generate_messages_cpp)
+  target_compile_options(${PROJECT_NAME}_livox_to_ouster PRIVATE ${OpenMP_CXX_FLAGS})
+  target_link_libraries(${PROJECT_NAME}_livox_to_ouster ${catkin_LIBRARIES} ${CERES_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBRARIES} ${OpenMP_CXX_FLAGS} UFO::Map Sophus::Sophus)
+  # Livox mid-360
+  add_executable(${PROJECT_NAME}_livox2_to_ouster src/lidar_converters/Livox2ToOuster.cpp)
+  add_dependencies(${PROJECT_NAME}_livox2_to_ouster ${catkin_EXPORTED_TARGETS} ${PROJECT_NAME}_generate_messages_cpp)
+  target_compile_options(${PROJECT_NAME}_livox2_to_ouster PRIVATE ${OpenMP_CXX_FLAGS})
+  target_link_libraries(${PROJECT_NAME}_livox2_to_ouster ${catkin_LIBRARIES} ${CERES_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBRARIES} ${OpenMP_CXX_FLAGS} UFO::Map Sophus::Sophus)
+endif()
 # Hesai
 add_executable(${PROJECT_NAME}_hesai_to_ouster src/lidar_converters/HesaiToOuster.cpp)
 add_dependencies(${PROJECT_NAME}_hesai_to_ouster ${catkin_EXPORTED_TARGETS} ${PROJECT_NAME}_generate_messages_cpp)
