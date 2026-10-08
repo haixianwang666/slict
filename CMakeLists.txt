@@ -49,6 +49,49 @@ find_package(Eigen3 REQUIRED)
 find_package(Ceres  REQUIRED)
 find_package(Sophus REQUIRED)
 
+## Sophus packages in the wild expose different CMake interfaces. Newer
+## releases provide Sophus::Sophus, while older ROS/source installs may only
+## provide sophus/Sophus or an include-directory variable. Normalize all of
+## them to the target name used below.
+if(NOT TARGET Sophus::Sophus)
+  if(TARGET Sophus::sophus)
+    add_library(Sophus::Sophus ALIAS Sophus::sophus)
+  elseif(TARGET sophus)
+    add_library(Sophus::Sophus ALIAS sophus)
+  elseif(TARGET Sophus)
+    add_library(Sophus::Sophus ALIAS Sophus)
+  else()
+    set(SLICT_SOPHUS_INCLUDE_DIRS "")
+    foreach(_sophus_include_var
+        Sophus_INCLUDE_DIRS
+        Sophus_INCLUDE_DIR
+        SOPHUS_INCLUDE_DIRS
+        SOPHUS_INCLUDE_DIR)
+      if(DEFINED ${_sophus_include_var})
+        list(APPEND SLICT_SOPHUS_INCLUDE_DIRS ${${_sophus_include_var}})
+      endif()
+    endforeach()
+
+    if(NOT SLICT_SOPHUS_INCLUDE_DIRS)
+      find_path(SLICT_SOPHUS_INCLUDE_DIR sophus/se3.hpp)
+      if(SLICT_SOPHUS_INCLUDE_DIR)
+        list(APPEND SLICT_SOPHUS_INCLUDE_DIRS ${SLICT_SOPHUS_INCLUDE_DIR})
+      endif()
+    endif()
+
+    if(NOT SLICT_SOPHUS_INCLUDE_DIRS)
+      message(FATAL_ERROR
+        "Sophus was found, but it exported neither a CMake target nor the "
+        "include directory containing sophus/se3.hpp")
+    endif()
+
+    list(REMOVE_DUPLICATES SLICT_SOPHUS_INCLUDE_DIRS)
+    add_library(Sophus::Sophus INTERFACE IMPORTED)
+    set_target_properties(Sophus::Sophus PROPERTIES
+      INTERFACE_INCLUDE_DIRECTORIES "${SLICT_SOPHUS_INCLUDE_DIRS}")
+  endif()
+endif()
+
 ## Generate messages in the 'msg' folder
 add_message_files(
   DIRECTORY msg
