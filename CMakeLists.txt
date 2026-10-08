@@ -49,6 +49,26 @@ find_package(Eigen3 REQUIRED)
 find_package(Ceres  REQUIRED)
 find_package(Sophus REQUIRED)
 
+## Prefer the imported Ceres target so its headers and library always come
+## from the same installation. This avoids mixing /usr/include with a Ceres
+## library installed under /usr/local or another prefix.
+if(TARGET Ceres::ceres)
+  set(CERES_LIBRARIES Ceres::ceres)
+endif()
+
+set(SLICT_CERES_VERSION "")
+if(DEFINED Ceres_VERSION)
+  set(SLICT_CERES_VERSION "${Ceres_VERSION}")
+elseif(DEFINED CERES_VERSION)
+  set(SLICT_CERES_VERSION "${CERES_VERSION}")
+endif()
+
+if(SLICT_CERES_VERSION VERSION_GREATER "2.1.0")
+  message(FATAL_ERROR
+    "SLICT2 Noetic requires Ceres 2.1.0 or older, but found "
+    "${SLICT_CERES_VERSION} at ${Ceres_DIR}")
+endif()
+
 ## Sophus packages in the wild expose different CMake interfaces. Newer
 ## releases provide Sophus::Sophus, while older ROS/source installs may only
 ## provide sophus/Sophus or an include-directory variable. Normalize all of
@@ -161,6 +181,7 @@ include_directories(
 	${PCL_INCLUDE_DIRS}
   # ${OpenCV_INCLUDE_DIRS}
   ${EIGEN3_INCLUDE_DIR}
+  ${CERES_INCLUDE_DIRS}
   ${CERES_INCLUDE_DIR}
 )
 
