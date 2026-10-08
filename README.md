@@ -106,6 +106,12 @@ The launch files for NTU VIRAL, Newer College, MCD VIRAL, and FusionPortable are
 
 Please raise an issue if you encounter any problem.
 
+## Multi-Sensor LiDAR SLAM Challenge 2026
+
+This fork includes an Airy LiDAR/IMU adapter, the official LiDAR-to-IMU
+calibration, dense TUM export at every original LiDAR header, and submission
+validation/packaging tools. See [the Chinese run guide](docs/challenge_2026_zh.md).
+
 ## Example
 
 After build step success, run following commands:

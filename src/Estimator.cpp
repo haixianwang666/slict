@@ -418,6 +418,12 @@ private:
     string log_dir_kf;
     std::ofstream loop_log_file;
 
+    // Dense challenge trajectory, sampled at the original LiDAR headers.
+    string challenge_trajectory_path;
+    bool challenge_apply_loop_correction = true;
+    mutex challenge_stamp_mtx;
+    vector<double> challenge_lidar_stamps;
+
     // PriorMap
     bool use_prior_map = false;
 
@@ -449,7 +455,13 @@ private:
     
 public:
     // Destructor
-    ~Estimator() {}
+    ~Estimator()
+    {
+        if (thread_update_map.joinable())
+            thread_update_map.join();
+        if (initPriorMapThread.joinable())
+            initPriorMapThread.join();
+    }
 
     Estimator(ros::NodeHandlePtr &nh_ptr_) : nh_ptr(nh_ptr_)
     {   
@@ -710,6 +722,17 @@ public:
         log_dir_kf = log_dir + "/KFCloud/";
         std::filesystem::create_directories(log_dir);
         std::filesystem::create_directories(log_dir_kf);
+
+        nh_ptr->param("/challenge_trajectory_path", challenge_trajectory_path, string(""));
+        nh_ptr->param("/challenge_apply_loop_correction", challenge_apply_loop_correction, true);
+        if (!challenge_trajectory_path.empty())
+        {
+            const std::filesystem::path trajectory_path(challenge_trajectory_path);
+            if (!trajectory_path.parent_path().empty())
+                std::filesystem::create_directories(trajectory_path.parent_path());
+            printf("Challenge TUM trajectory: %s (loop correction: %d)\n",
+                   challenge_trajectory_path.c_str(), challenge_apply_loop_correction);
+        }
 
         loop_log_file.open(log_dir + "/loop_log.csv");
         loop_log_file.precision(std::numeric_limits<double>::digits10 + 1);
@@ -1208,6 +1231,23 @@ public:
 
     void DataHandler(const slict::FeatureCloud::ConstPtr &msg)
     {
+        if (!challenge_trajectory_path.empty())
+        {
+            const double stamp = msg->header.stamp.toSec();
+            lock_guard<mutex> stamp_lock(challenge_stamp_mtx);
+            if (isfinite(stamp) &&
+                (challenge_lidar_stamps.empty() || stamp > challenge_lidar_stamps.back()))
+            {
+                challenge_lidar_stamps.push_back(stamp);
+            }
+            else if (!challenge_lidar_stamps.empty() && stamp <= challenge_lidar_stamps.back())
+            {
+                ROS_WARN_THROTTLE(1.0,
+                                  "Ignoring non-increasing LiDAR header %.9f after %.9f",
+                                  stamp, challenge_lidar_stamps.back());
+            }
+        }
+
         lock_guard<mutex> lock(packet_buf_mtx);
         packet_buf.push_back(msg);
     }
@@ -1971,6 +2011,7 @@ public:
             static ros::Publisher tlog_pub = nh_ptr->advertise<slict::TimeLog>("/time_log", 100);
             tlog_pub.publish(tlog);
         }
+        return true;
     }
 
     void PublishAssocCloud(vector<lidarFeaIdx> &featureSelected, deque<vector<LidarCoef>> &SwLidarCoef)
@@ -4632,8 +4673,154 @@ public:
         return true;
     }
 
+    void SaveChallengeTrajectory()
+    {
+        if (challenge_trajectory_path.empty() || GlobalTraj == nullptr)
+            return;
+
+        vector<double> stamps;
+        {
+            lock_guard<mutex> lock(challenge_stamp_mtx);
+            stamps = challenge_lidar_stamps;
+        }
+        if (stamps.empty())
+        {
+            ROS_WARN("No LiDAR header stamps were captured; challenge trajectory was not written");
+            return;
+        }
+
+        struct PoseCorrection
+        {
+            double stamp;
+            Quaternd rotation;
+            Vector3d translation;
+        };
+        vector<PoseCorrection> corrections;
+
+        const double min_time = GlobalTraj->minTime();
+        const double max_time = GlobalTraj->maxTime();
+        const double epsilon = min(1e-9, max(0.0, (max_time - min_time) * 1e-6));
+        const auto clamp_query_time = [&](double stamp)
+        {
+            return min(max(stamp, min_time + epsilon), max_time - epsilon);
+        };
+
+        if (challenge_apply_loop_correction && KfCloudPose != nullptr)
+        {
+            corrections.reserve(KfCloudPose->size());
+            for (const PointPose &keyframe : KfCloudPose->points)
+            {
+                if (!isfinite(keyframe.t))
+                    continue;
+
+                const SE3d raw_pose = GlobalTraj->pose(clamp_query_time(keyframe.t));
+                const Quaternd raw_rotation = raw_pose.so3().unit_quaternion().normalized();
+                const Vector3d raw_translation = raw_pose.translation();
+                Quaternd optimized_rotation(keyframe.qw, keyframe.qx, keyframe.qy, keyframe.qz);
+                if (!isfinite(optimized_rotation.norm()) || optimized_rotation.norm() < 1e-12)
+                    continue;
+                optimized_rotation.normalize();
+
+                PoseCorrection correction;
+                correction.stamp = keyframe.t;
+                correction.rotation = (optimized_rotation * raw_rotation.conjugate()).normalized();
+                correction.translation = Vector3d(keyframe.x, keyframe.y, keyframe.z)
+                                       - correction.rotation * raw_translation;
+                corrections.push_back(correction);
+            }
+            sort(corrections.begin(), corrections.end(),
+                 [](const PoseCorrection &lhs, const PoseCorrection &rhs)
+                 {
+                     return lhs.stamp < rhs.stamp;
+                 });
+        }
+
+        const std::filesystem::path trajectory_path(challenge_trajectory_path);
+        if (!trajectory_path.parent_path().empty())
+            std::filesystem::create_directories(trajectory_path.parent_path());
+
+        ofstream trajectory_file(challenge_trajectory_path, ios::out | ios::trunc);
+        if (!trajectory_file.is_open())
+        {
+            ROS_ERROR("Cannot open challenge trajectory for writing: %s",
+                      challenge_trajectory_path.c_str());
+            return;
+        }
+        trajectory_file << fixed << setprecision(15);
+
+        size_t written = 0;
+        for (double stamp : stamps)
+        {
+            const SE3d raw_pose = GlobalTraj->pose(clamp_query_time(stamp));
+            Quaternd output_rotation = raw_pose.so3().unit_quaternion().normalized();
+            Vector3d output_translation = raw_pose.translation();
+
+            if (!corrections.empty())
+            {
+                const auto next = lower_bound(
+                    corrections.begin(), corrections.end(), stamp,
+                    [](const PoseCorrection &correction, double value)
+                    {
+                        return correction.stamp < value;
+                    });
+
+                PoseCorrection correction;
+                if (next == corrections.begin())
+                {
+                    correction = *next;
+                }
+                else if (next == corrections.end())
+                {
+                    correction = corrections.back();
+                }
+                else
+                {
+                    const PoseCorrection &right = *next;
+                    const PoseCorrection &left = *(next - 1);
+                    const double duration = right.stamp - left.stamp;
+                    const double alpha = duration > 1e-12
+                        ? max(0.0, min(1.0, (stamp - left.stamp) / duration))
+                        : 0.0;
+                    correction.stamp = stamp;
+                    correction.rotation = left.rotation.slerp(alpha, right.rotation).normalized();
+                    correction.translation = (1.0 - alpha) * left.translation
+                                           + alpha * right.translation;
+                }
+
+                output_translation = correction.rotation * output_translation
+                                   + correction.translation;
+                output_rotation = (correction.rotation * output_rotation).normalized();
+            }
+
+            if (!isfinite(output_translation.x()) || !isfinite(output_translation.y()) ||
+                !isfinite(output_translation.z()) || !isfinite(output_rotation.x()) ||
+                !isfinite(output_rotation.y()) || !isfinite(output_rotation.z()) ||
+                !isfinite(output_rotation.w()))
+            {
+                ROS_WARN("Skipping non-finite challenge pose at %.9f", stamp);
+                continue;
+            }
+
+            trajectory_file << stamp << " "
+                            << output_translation.x() << " "
+                            << output_translation.y() << " "
+                            << output_translation.z() << " "
+                            << output_rotation.x() << " "
+                            << output_rotation.y() << " "
+                            << output_rotation.z() << " "
+                            << output_rotation.w() << "\n";
+            written++;
+        }
+        trajectory_file.close();
+
+        ROS_INFO("Wrote %zu/%zu dense IMU-origin poses to %s",
+                 written, stamps.size(), challenge_trajectory_path.c_str());
+    }
+
     void SaveTrajLog()
     {
+        SaveChallengeTrajectory();
+
         printf("Logging cloud pose: %s.\n", (log_dir + "/KfCloudPose.pcd").c_str());
         
         int save_attempts = 0;
@@ -4884,6 +5071,9 @@ int main(int argc, char **argv)
 
     ros::MultiThreadedSpinner spinner(0);
     spinner.spin();
+
+    if (process_data.joinable())
+        process_data.join();
 
     estimator.SaveTrajLog();
 

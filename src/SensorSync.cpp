@@ -31,9 +31,16 @@
 #include <boost/format.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/bind.hpp>
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <deque>
+#include <limits>
 #include <thread>
 #include <condition_variable>
+#include <unordered_map>
 
 #include <Eigen/Dense>
 #include <cv_bridge/cv_bridge.h>
@@ -42,11 +49,81 @@
 #include "tf/transform_broadcaster.h"
 #include "tf2_ros/static_transform_broadcaster.h"
 #include "image_transport/image_transport.h"
+#include "sensor_msgs/PointField.h"
 #include "slict/FeatureCloud.h"
 
 // Package specials
 // #include "preprocess.hpp"
 #include "utility.h"
+
+namespace
+{
+size_t PointFieldSize(uint8_t datatype)
+{
+    using PF = sensor_msgs::PointField;
+    switch (datatype)
+    {
+        case PF::INT8:
+        case PF::UINT8:
+            return 1;
+        case PF::INT16:
+        case PF::UINT16:
+            return 2;
+        case PF::INT32:
+        case PF::UINT32:
+        case PF::FLOAT32:
+            return 4;
+        case PF::FLOAT64:
+            return 8;
+        default:
+            return 0;
+    }
+}
+
+bool HostIsBigEndian()
+{
+    const uint16_t value = 0x0102;
+    return *reinterpret_cast<const uint8_t *>(&value) == 0x01;
+}
+
+template <typename T>
+T ReadValue(const uint8_t *source, bool swap_bytes)
+{
+    array<uint8_t, sizeof(T)> bytes{};
+    memcpy(bytes.data(), source, sizeof(T));
+    if (swap_bytes && sizeof(T) > 1)
+        reverse(bytes.begin(), bytes.end());
+
+    T value;
+    memcpy(&value, bytes.data(), sizeof(T));
+    return value;
+}
+
+double ReadScalar(const uint8_t *source, uint8_t datatype, bool swap_bytes)
+{
+    using PF = sensor_msgs::PointField;
+    switch (datatype)
+    {
+        case PF::INT8:    return static_cast<double>(ReadValue<int8_t>(source, false));
+        case PF::UINT8:   return static_cast<double>(ReadValue<uint8_t>(source, false));
+        case PF::INT16:   return static_cast<double>(ReadValue<int16_t>(source, swap_bytes));
+        case PF::UINT16:  return static_cast<double>(ReadValue<uint16_t>(source, swap_bytes));
+        case PF::INT32:   return static_cast<double>(ReadValue<int32_t>(source, swap_bytes));
+        case PF::UINT32:  return static_cast<double>(ReadValue<uint32_t>(source, swap_bytes));
+        case PF::FLOAT32: return static_cast<double>(ReadValue<float>(source, swap_bytes));
+        case PF::FLOAT64: return ReadValue<double>(source, swap_bytes);
+        default:          return numeric_limits<double>::quiet_NaN();
+    }
+}
+
+const sensor_msgs::PointField *FindField(
+    const unordered_map<string, sensor_msgs::PointField> &fields,
+    const string &name)
+{
+    const auto it = fields.find(name);
+    return it == fields.end() ? nullptr : &it->second;
+}
+} // namespace
 
 struct CloudPacket
 {
@@ -98,6 +175,10 @@ private:
     int Nlidar;
     int Nimu;
 
+    vector<string> lidar_type;
+    bool preserve_lidar_header = false;
+    double airy_max_scan_duration = 0.25;
+
     double cutoff_time = -1;
     double cutoff_time_new = -1;
     double min_range = 0.5;
@@ -111,7 +192,13 @@ private:
 
 public:
     // Destructor
-    ~SensorSync() {}
+    ~SensorSync()
+    {
+        if (sync_lidar.joinable())
+            sync_lidar.join();
+        if (sync_data.joinable())
+            sync_data.join();
+    }
 
     SensorSync(ros::NodeHandlePtr &nh_ptr_) : nh_ptr(nh_ptr_)
     {
@@ -130,6 +217,13 @@ public:
 
         Nlidar = lidar_topic.size();
 
+        lidar_type = vector<string>(Nlidar, "ouster");
+        nh_ptr->getParam("/lidar_type", lidar_type);
+        ROS_ASSERT_MSG(lidar_type.size() == static_cast<size_t>(Nlidar),
+                       "lidar_type must contain one entry per lidar topic");
+        nh_ptr->param("/preserve_lidar_header", preserve_lidar_header, false);
+        nh_ptr->param("/airy_max_scan_duration", airy_max_scan_duration, 0.25);
+
         // Read the extrincs of lidars
         vector<double> lidar_extr = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
         nh_ptr->getParam("/lidar_extr", lidar_extr);
@@ -142,7 +236,7 @@ public:
         for(int i = 0; i < Nlidar; i++)
         {
             // Confirm the topics
-            printf("Lidar topic #%02d: %s\n", i, lidar_topic[i].c_str());
+            printf("Lidar topic #%02d: %s (%s)\n", i, lidar_topic[i].c_str(), lidar_type[i].c_str());
 
             Matrix4d extrinsicTf = Matrix<double, 4, 4, RowMajor>(&lidar_extr[i*16]);
             cout << "extrinsicTf: " << endl;
@@ -158,7 +252,8 @@ public:
             lidar_sub.push_back(nh_ptr->subscribe<sensor_msgs::PointCloud2>
                                             (lidar_topic[i], 100,
                                              boost::bind(&SensorSync::PcHandler, this,
-                                                         _1, i, extrinsicTf(3, 2), (int)extrinsicTf(3, 3))));
+                                                         _1, i, extrinsicTf(3, 2), (int)extrinsicTf(3, 3),
+                                                         lidar_type[i])));
         }
 
         nh_ptr->getParam("/min_range", min_range);
@@ -216,8 +311,174 @@ public:
         sync_data  = thread(&SensorSync::SyncData, this);
     }
 
-    void PcHandler(const sensor_msgs::PointCloud2::ConstPtr &msg, int idx, double time_offset, int stamp_type)
+    bool DecodeAiryCloud(const sensor_msgs::PointCloud2::ConstPtr &msg, int idx,
+                         double time_offset, int stamp_type, CloudPacket &packet)
     {
+        unordered_map<string, sensor_msgs::PointField> fields;
+        for (const auto &field : msg->fields)
+            fields[field.name] = field;
+
+        for (const string &name : {"x", "y", "z", "timestamp"})
+        {
+            const sensor_msgs::PointField *field = FindField(fields, name);
+            if (field == nullptr || field->count < 1 || PointFieldSize(field->datatype) == 0 ||
+                static_cast<size_t>(field->offset) + PointFieldSize(field->datatype) > msg->point_step)
+            {
+                ROS_ERROR_THROTTLE(1.0, "Airy PointCloud2 has a missing or unreadable '%s' field", name.c_str());
+                return false;
+            }
+        }
+
+        const bool swap_bytes = msg->is_bigendian != HostIsBigEndian();
+        const auto scalar = [&](const uint8_t *point, const string &name, double fallback)
+        {
+            const sensor_msgs::PointField *field = FindField(fields, name);
+            if (field == nullptr || field->count < 1 || PointFieldSize(field->datatype) == 0 ||
+                static_cast<size_t>(field->offset) + PointFieldSize(field->datatype) > msg->point_step)
+                return fallback;
+            return ReadScalar(point + field->offset, field->datatype, swap_bytes);
+        };
+
+        struct AiryPoint
+        {
+            PointXYZIT point;
+            double raw_time;
+        };
+
+        vector<AiryPoint> decoded;
+        decoded.reserve(static_cast<size_t>(msg->width) * msg->height);
+        vector<double> raw_times;
+        raw_times.reserve(decoded.capacity());
+
+        for (uint32_t row = 0; row < msg->height; row++)
+        {
+            const size_t row_offset = static_cast<size_t>(row) * msg->row_step;
+            for (uint32_t col = 0; col < msg->width; col++)
+            {
+                const size_t offset = row_offset + static_cast<size_t>(col) * msg->point_step;
+                if (offset + msg->point_step > msg->data.size())
+                    continue;
+
+                const uint8_t *data = msg->data.data() + offset;
+                const double x = scalar(data, "x", numeric_limits<double>::quiet_NaN());
+                const double y = scalar(data, "y", numeric_limits<double>::quiet_NaN());
+                const double z = scalar(data, "z", numeric_limits<double>::quiet_NaN());
+                const double raw_time = scalar(data, "timestamp", numeric_limits<double>::quiet_NaN());
+                if (!isfinite(x) || !isfinite(y) || !isfinite(z) || !isfinite(raw_time))
+                    continue;
+                if (sqrt(x*x + y*y + z*z) < min_range)
+                    continue;
+
+                Vector3d p_inB = R_B_L[idx] * Vector3d(x, y, z) + t_B_L[idx];
+                const double intensity = scalar(data, "intensity", 0.0);
+
+                AiryPoint airy_point;
+                airy_point.point.x = static_cast<float>(p_inB.x());
+                airy_point.point.y = static_cast<float>(p_inB.y());
+                airy_point.point.z = static_cast<float>(p_inB.z());
+                airy_point.point.intensity = isfinite(intensity) ? static_cast<float>(intensity) : 0.0f;
+                airy_point.raw_time = raw_time;
+                decoded.push_back(airy_point);
+                raw_times.push_back(raw_time);
+            }
+        }
+
+        if (decoded.empty())
+        {
+            ROS_WARN_THROTTLE(1.0, "Airy PointCloud2 contains no valid points");
+            return false;
+        }
+
+        const auto raw_bounds = minmax_element(raw_times.begin(), raw_times.end());
+        const double raw_span = *raw_bounds.second - *raw_bounds.first;
+        vector<double> median_times = raw_times;
+        nth_element(median_times.begin(), median_times.begin() + median_times.size()/2, median_times.end());
+        const double median_time = median_times[median_times.size()/2];
+        const double header_time = msg->header.stamp.toSec() + time_offset;
+
+        const bool absolute_seconds =
+            fabs(median_time - msg->header.stamp.toSec()) < 2.0 * airy_max_scan_duration &&
+            raw_span <= airy_max_scan_duration;
+
+        double relative_scale = 1.0;
+        if (!absolute_seconds && raw_span > 1e-12)
+        {
+            const double candidates[] = {1.0, 1e-3, 1e-6, 1e-9};
+            double best_error = numeric_limits<double>::infinity();
+            for (double candidate : candidates)
+            {
+                const double duration = raw_span * candidate;
+                if (duration <= 0.0 || duration > airy_max_scan_duration)
+                    continue;
+                const double error = fabs(duration - 0.1);
+                if (error < best_error)
+                {
+                    best_error = error;
+                    relative_scale = candidate;
+                }
+            }
+        }
+
+        CloudXYZITPtr cloud(new CloudXYZIT());
+        cloud->reserve(decoded.size());
+        double first_point_time = numeric_limits<double>::infinity();
+        double last_point_time = -numeric_limits<double>::infinity();
+        for (auto &airy_point : decoded)
+        {
+            const double point_time = absolute_seconds
+                ? airy_point.raw_time + time_offset
+                : header_time + (airy_point.raw_time - *raw_bounds.first) * relative_scale;
+            if (!isfinite(point_time))
+                continue;
+            airy_point.point.t = point_time;
+            first_point_time = min(first_point_time, point_time);
+            last_point_time = max(last_point_time, point_time);
+            cloud->push_back(airy_point.point);
+        }
+
+        sort(cloud->points.begin(), cloud->points.end(),
+             [](const PointXYZIT &lhs, const PointXYZIT &rhs) { return lhs.t < rhs.t; });
+
+        if (cloud->empty())
+            return false;
+
+        const double start_time = stamp_type == 1 ? header_time : min(header_time, first_point_time);
+        const double end_time = stamp_type == 1 ? max(header_time, last_point_time) : header_time;
+        if (!(end_time > start_time) || end_time - start_time > airy_max_scan_duration)
+        {
+            ROS_ERROR_THROTTLE(1.0, "Invalid Airy scan interval %.6f -> %.6f", start_time, end_time);
+            return false;
+        }
+
+        static bool reported_schema = false;
+        if (!reported_schema)
+        {
+            reported_schema = true;
+            string names;
+            for (const auto &field : msg->fields)
+                names += (names.empty() ? "" : ",") + field.name;
+            ROS_INFO("Airy PointCloud2 fields=[%s], points=%zu, time=%s, span=%.6f s, header_to_first=%.6f s",
+                     names.c_str(), cloud->size(), absolute_seconds ? "absolute_seconds" : "relative_auto",
+                     last_point_time - first_point_time, first_point_time - header_time);
+        }
+
+        packet = CloudPacket(start_time, end_time, cloud);
+        return true;
+    }
+
+    void PcHandler(const sensor_msgs::PointCloud2::ConstPtr &msg, int idx, double time_offset,
+                   int stamp_type, const string &type)
+    {
+        if (type == "airy")
+        {
+            CloudPacket packet;
+            if (!DecodeAiryCloud(msg, idx, time_offset, stamp_type, packet))
+                return;
+            lock_guard<mutex> lock(lidar_buf_mtx);
+            lidar_buf[idx].push_back(packet);
+            return;
+        }
+
         if (idx == 0)
         {
             // Lump the pointclouds together
@@ -357,12 +618,31 @@ public:
     
     void SyncLidar()
     {
-        while(ros::ok)
+        while(ros::ok())
         {
             // Loop if the secondary buffers don't over lap
             if(!LidarBufReady())
             {
                 this_thread::sleep_for(chrono::milliseconds(10));
+                continue;
+            }
+
+            // The challenge has one Airy LiDAR and evaluates poses at each
+            // unmodified cloud header. Bypass the multi-lidar cutoff logic so
+            // the next packet cannot inherit the previous scan's end time.
+            if (preserve_lidar_header && Nlidar == 1)
+            {
+                CloudPacket packet;
+                {
+                    lock_guard<mutex> lock(lidar_buf_mtx);
+                    packet = lidar_buf[0].front();
+                    lidar_buf[0].pop_front();
+                }
+                if (!packet.cloud->empty())
+                {
+                    lock_guard<mutex> lock(merged_cloud_buf_mtx);
+                    merged_cloud_buf.push_back(packet);
+                }
                 continue;
             }
 
@@ -572,7 +852,7 @@ public:
 
     void SyncData()
     {
-        while (true)
+        while (ros::ok())
         {
             /* #region Probing the key buffers ----------------------------------------------------------------------*/
 

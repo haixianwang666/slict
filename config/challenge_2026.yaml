@@ -1,0 +1,168 @@
+# Multi-Sensor LiDAR SLAM Challenge 2026 (LiDAR-inertial track).
+# Output body frame is the Airy built-in IMU frame.
+autoexit: 1
+slam_ref_frame: "world"
+T_M_W_init: [
+  1.0, 0.0, 0.0, 0.0,
+  0.0, 1.0, 0.0, 0.0,
+  0.0, 0.0, 1.0, 0.0,
+  0.0, 0.0, 0.0, 1.0
+]
+
+lidar_topic: ["/rslidar_front_points"]
+lidar_type: ["airy"]
+merged_lidar_topic: "/merged_pc"
+
+# Keep each packet boundary at the unmodified PointCloud2 header. The generic
+# multi-LiDAR merger otherwise advances the next start to the previous end.
+preserve_lidar_header: true
+airy_max_scan_duration: 0.25
+
+# Official calibration direction:
+#   p_imu = R_imu_lidar * p_lidar + t_imu_lidar
+# The last row is also SLICT metadata: col(3,2)=time offset, col(3,3)=1 means
+# the message header denotes scan start.
+lidar_extr: [
+  -0.0082098427130477, -0.9999652081824480,  0.0014767895111225,  0.0042500000000000,
+  -0.9999587578050865,  0.0082155072710765,  0.0038714505275241,  0.0041800000000000,
+  -0.0038834484076902, -0.0014449446051793, -0.9999914154449288, -0.0044600000000000,
+   0.0,                 0.0,                 0.0,                 1.0
+]
+min_range: 1.0
+sweep_len: 1
+ds_rate: [1]
+
+imu_topic: "/rslidar_front_imu_data"
+imu_extr: [
+  1.0, 0.0, 0.0, 0.0,
+  0.0, 1.0, 0.0, 0.0,
+  0.0, 0.0, 1.0, 0.0,
+  0.0, 0.0, 0.0, 1.0
+]
+
+# Leave raw acceleration unchanged here. SLICT estimates ACC_SCALE from the
+# initialization mean, so the released approximately-1g stream is converted to
+# GRAV automatically and an already-m/s^2 stream is not multiplied twice.
+acce_scale: 1.0
+GRAV: 9.81
+
+# Residual weights (not covariance values in this implementation).
+GYR_N: 4.0
+GYR_W: 2.0
+ACC_N: 0.4
+ACC_W: 2.0
+POSE_N: 100.0
+VEL_N: 10.0
+lidar_weight: 4.0
+prior_weight: 10.0
+BG_BOUND: [0.3, 0.3, 0.4]
+BA_BOUND: [0.3, 0.3, 0.4]
+
+WINDOW_SIZE: 3
+N_SUB_SEG: 8
+SPLINE_N: 4
+deltaT: 0.01
+start_fix_span: -1.0
+final_fix_span: -1.0
+reassociate_steps: 2
+deskew_method: [0, 0]
+reassoc_rate: 0
+use_ceres: 0
+
+# Airy is dense; 0.20 m is a conservative CPU baseline. Tune 0.15--0.30 m
+# after the first complete run according to speed and geometry.
+leaf_size: 0.20
+assoc_spacing: 0.20
+surfel_map_depth: 16
+surfel_min_point: 6
+surfel_min_depth: 1
+surfel_query_depth: 3
+surfel_intsect_rad: 0.40
+surfel_min_plnrty: 0.70
+use_ufm: 1
+dis_to_surfel_max: 0.30
+score_min: 0.0
+
+kf_min_dis: 1.0
+kf_min_angle: 10.0
+refine_kf: 0
+
+lidar_loss_thres: -10.0
+imu_loss_thres: -1.0
+linSolver: "snc"
+trustRegType: "lm"
+linAlgbLib: "eigen"
+max_solve_time: 0.30
+max_iterations: 30
+ensure_real_time: 0
+find_factor_cost: 0
+fit_spline: 0
+lambda: 1.0
+
+fuse_lidar: 1
+fuse_imu: 1
+fuse_poseprop: 0
+fuse_velprop: 0
+fuse_marg: 1
+regularize_imu: 1
+imu_init_time: 0.50
+lite_redeskew: 1
+max_outer_iters: 4
+max_lidar_factor: 8000
+dj_thres: 0.0
+
+loop_en: 1
+loop_kf_nbr: 20
+loop_kfid_mindiff: 20
+icpMaxIter: 100
+icpFitnessThres: 0.60
+histDis: 15.0
+rib_edge: 100
+odom_q_noise: 0.10
+odom_p_noise: 0.10
+loop_weight: 0.05
+
+publish_map: 0
+show_report: 1
+show_preop_times: 0
+show_lioop_times: 0
+
+# Overridden by launch/run_challenge_2026.launch.
+log_dir: "/tmp/slict_challenge_2026"
+challenge_trajectory_path: ""
+challenge_apply_loop_correction: true
+
+# Kept complete because Estimator initializes the relocalization settings even
+# when no prior map is used.
+relocalization:
+  ds_size: 0.25
+  maximum_corner_num: 100
+  plane_detection_thre: 0.01
+  plane_merge_normal_thre: 0.2
+  voxel_size: 2.0
+  voxel_init_num: 10
+  proj_image_resolution: 0.5
+  proj_dis_min: 0
+  proj_dis_max: 5
+  corner_thre: 10
+  descriptor_near_num: 10
+  descriptor_min_len: 2
+  descriptor_max_len: 50
+  non_max_suppression_radius: 2
+  std_side_resolution: 0.2
+  skip_near_num: 100
+  candidate_num: 50
+  sub_frame_num: 1
+  vertex_diff_threshold: 0.5
+  rough_dis_threshold: 0.05
+  normal_threshold: 0.2
+  dis_threshold: 0.5
+  icp_threshold: 0.4
+  kf_merged: 1
+  refine_reloc_tf: 0
+  reloc_thres: 3
+  reloc_timespan: 10.0
+  pose_percentile_thres: 0.7
+  priormap_viz_res: 0.2
+  marginalize_new_points: 0
+  ioa_max_iter: 40

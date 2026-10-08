@@ -1,0 +1,29 @@
+<launch>
+  <arg name="bag_file" default="/data/sequence_01_0000_0550.bag"/>
+  <arg name="scene_id" default="scene_0001"/>
+  <arg name="output_root" default="/home/$(env USER)/slict_challenge_2026"/>
+  <arg name="trajectory_path" default="$(arg output_root)/trajectories/$(arg scene_id).txt"/>
+  <arg name="log_dir" default="$(arg output_root)/logs/$(arg scene_id)"/>
+  <arg name="bag_rate" default="1.0"/>
+  <arg name="loop_en" default="1"/>
+  <arg name="rviz" default="false"/>
+
+  <rosparam file="$(find slict)/config/challenge_2026.yaml" command="load"/>
+  <param name="/autoexit" type="int" value="1"/>
+  <param name="/loop_en" type="int" value="$(arg loop_en)"/>
+  <param name="/log_dir" type="string" value="$(arg log_dir)"/>
+  <param name="/challenge_trajectory_path" type="string" value="$(arg trajectory_path)"/>
+  <param name="/use_sim_time" value="true"/>
+
+  <node pkg="slict" type="slict_sensorsync" name="slict_sensorsync"
+        respawn="false" output="screen" required="true"/>
+  <node pkg="slict" type="slict_estimator" name="slict_estimator"
+        respawn="false" output="screen" required="true"/>
+
+  <node if="$(arg rviz)" pkg="rviz" type="rviz" name="rviz"
+        respawn="false" output="log" args="-d $(find slict)/launch/helmet.rviz"/>
+
+  <node pkg="rosbag" type="play" name="rosbag_player" required="false"
+        args="--clock -r $(arg bag_rate) $(arg bag_file)"
+        launch-prefix="bash -c 'sleep 2; exec &quot;$0&quot; &quot;$@&quot;' "/>
+</launch>
