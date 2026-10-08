@@ -21,7 +21,8 @@ topic 不会被订阅。
 
 ## 环境与编译
 
-上游 SLICT2 `noetic` 版本要求 Ubuntu 20.04、ROS Noetic、Ceres 2.1、Sophus 和
+上游 SLICT2 `noetic` 版本要求 Ubuntu 20.04、ROS Noetic、Ceres 2.1、Sophus
+1.22.10 和
 ROS 1 版本的 `devel_surfel` UFOMap。该分支最新提交已经迁移到 ROS 2，因此必须固定到
 下面给出的最后一个 ROS 1/catkin 提交。比赛构建默认关闭 Livox 转换节点，不需要安装
 Livox SDK、`livox_ros_driver` 或 `livox_ros_driver2`。

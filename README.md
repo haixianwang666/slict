@@ -68,12 +68,14 @@ The software was developed on the following dependencies. Ubuntu 20.04 and ROS N
     cmake .. && make -j$(nproc)
     sudo make install
     ```
-- Sophus
+- Sophus 1.22.10 (newer releases may require Eigen 3.4, while older system
+  packages may only provide `sophus/se3.h` instead of the required
+  `sophus/se3.hpp`)
   ```bash
-  git clone https://github.com/strasdat/Sophus
+  git clone --depth 1 --branch 1.22.10 https://github.com/strasdat/Sophus
   cd Sophus
   mkdir build && cd build
-  cmake .. -DSOPHUS_USE_BASIC_LOGGING=ON
+  cmake .. -DSOPHUS_USE_BASIC_LOGGING=ON -DBUILD_SOPHUS_TESTS=OFF -DBUILD_SOPHUS_EXAMPLES=OFF
   make -j$(nproc)
   sudo make install
   ```
